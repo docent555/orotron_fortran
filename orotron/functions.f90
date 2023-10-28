@@ -1,185 +1,210 @@
 module functions
    use, intrinsic :: iso_c_binding
 
-   complex(c_double_complex) :: C0 = (0, 1), CR = 0, C2
-   real(c_double) :: SQR2 = dsqrt(2.0D0), SQR2M2 = 2.828427124746190, &
-                     SQR2D2 = 0.707106781186548
+   complex(c_double_complex), private :: C0, CR = 0, C2
+   real(c_double), private :: SQR2 = dsqrt(2.0D0), SQR2M2 = 2.828427124746190, SQR2D2 = 0.707106781186548
 
-   complex(c_double_complex) :: IR, IROldPart, WNz, WNzm1, OldOldSigmaNz, OldOldSigmaNzm1, OldSigmaNz, OldSigmaNzm1, &
-                                WR_step_part, D_end_part, C0mSQRDZdDeltaTm2, C0m2d3dDeltaT, &
-                                DeltaZmC0m2d3dDeltaT, DeltaZmC0d3dDeltaT
-   real(c_double) :: DeltaZ, DeltaT, SQRDT, SQRDZ, SQRDTm4d3, SQRDTm2d3, C2mSQRDTm4d3, &
-                     DeltaZd3, DeltaZd6
-   integer(c_int) :: i, j, err_alloc = 1, step, jout = 1, Nzm1, inloopnum
+   complex(c_double_complex), private :: IR, IROldPart, WNz, WNzm1, &
+                                         WR_step_part, D_end_part, C0mSQRDZdDTm2, C0m2d3dDT, &
+                                         DZmC0m2d3dDT, DZmC0d3dDT, C2mSQRDTm4d3
+   real(c_double), private :: DeltaT, SQRDT, SQRDZ, SQRDTm4d3, SQRDTm2d3, &
+                              DeltaZd3, DeltaZd6
+   integer(c_int), private :: i, j, err_alloc = 1, step, jout = 1, Nzm1, inloopnum
 
-   complex(c_double_complex) :: Im1 = (0.0d0, 1.0d0)
-   real(c_double) :: pi = dacos(-1.0d0) !real(c_double), parameter :: pi = 2.0d0*dacos(0.0d0)
+   complex(c_double_complex), private :: Im1 = (0.0d0, 1.0d0)
+   real(c_double), private :: pi = dacos(-1.0d0) !real(c_double), parameter :: pi = 2.0d0*dacos(0.0d0)
 
-   complex(c_double_complex), allocatable :: Field_sam(:), lField_sam(:), rField_sam(:), Field_nesam(:), lField_nesam(:), rField_nesam(:), &
-                                             A(:), B(:), C(:), D(:), D_1_Nzm1_part(:), gam(:), WR(:), &
-                                             FNz(:), FNzm1(:), OldCu(:), Cup(:), tmp(:), SigmaNz(:), SigmaNzm1(:)
-   real(c_double), allocatable :: TAxisNew(:), theta(:, :), dthdz(:, :)!, kpar2(:)
-   integer(c_int), allocatable :: IZ(:)
+   complex(c_double_complex), private, allocatable ::  FNz(:), FNzm1(:), gam(:), WR(:)
+
+   private :: Current, rhs, pendulumODE, u, calc_theta0, ltridag, rtridag
 
 contains
-   subroutine oro(Nz, Nt, Ne, INTERVALT, INTERVALZ, OUTNz, Delta, Ic, dz, dt, ZAxis, TAxis, &
-                  InitialField, tol, OUTB, OUTCu) bind(c, name='oro')
+   subroutine gyr(Nz, Nt, Ne, Delta, Ic, dz, dt, ZAxis, TAxis, &
+                  InitialField, tol, INTT, INTZ, OUTNz, OUTNt, OUTF, OUTCu, OUTZAxis, OUTTAxis) bind(c, name='gyr')
       implicit none
 
-      integer(c_int), intent(in) :: INTERVALT, INTERVALZ, OUTNz, Nz, Nt, Ne
+      integer(c_int), intent(in) :: INTT, INTZ, OUTNz, OUTNt, Nz, Nt, Ne
       real(c_double), intent(in) :: Delta, Ic, dz, dt, tol
-      real(c_double), intent(in) :: ZAxis(:), TAxis(:)
-      complex(c_double_complex), intent(in) :: InitialField(:)
-      complex(c_double_complex), intent(out) :: OUTB(:, :), OUTCu(:, :)
-      
-      real(c_double) maxdiff
+      real(c_double), intent(in) :: ZAxis(0:Nz), TAxis(0:Nt)
+      complex(c_double_complex), intent(in) :: InitialField(0:Nz)
+      real(c_double), intent(inout) :: OUTZAxis(0:OUTNz), OUTTAxis(0:OUTNt)
+      complex(c_double_complex), intent(out) :: OUTF(0:OUTNz, 0:OUTNt), OUTCu(0:OUTNz, 0:OUTNt)
 
-      C2 = 1.0d0/cdsqrt(-Im1*pi)
-      DeltaZ = dz
-      DeltaT = dt
+      real(c_double) maxdiff, maxfield, maxfield_p
 
-      allocate (Field_sam(0:Nz), lField_sam(0:Nz), rField_sam(0:Nz), Field_nesam(0:Nz), lField_nesam(0:Nz), rField_nesam(0:Nz), &
-                A(0:Nz), B(0:Nz - 1), C(1:Nz), D(0:Nz), D_1_Nzm1_part(1:Nz - 1), gam(Nz + 1), WR(0:Nt), &
+      complex(c_double_complex), allocatable :: field(:), lfield(:), rfield(:), field_p(:), lfield_p(:), rfield_p(:), &
+                                                A(:), B(:), C(:), D(:), CuNz(:), CuNzm1(:), &
+                                                cu(:), cu_p(:), tmp(:), SigmaNz(:), SigmaNzm1(:), kpar2(:)
+      real(c_double), allocatable :: theta(:, :), dthdz(:, :)
+      integer(c_int), allocatable :: IZ(:), IT(:)
+
+      allocate (field(0:Nz), lfield(0:Nz), rfield(0:Nz), field_p(0:Nz), lfield_p(0:Nz), rfield_p(0:Nz), &
+                A(0:Nz), B(0:Nz - 1), C(1:Nz), D(0:Nz), gam(Nz + 1), WR(0:Nt), &
                 FNz(0:Nt), FNzm1(0:Nt), theta(0:Nz, Ne), dthdz(0:Nz, Ne), &
-                OldCu(0:Nz), Cup(0:Nz), IZ(0:OUTNz), tmp(0:Nz), SigmaNz(0:Nt), SigmaNzm1(0:Nt), stat=err_alloc)
+                cu(0:Nz), cu_p(0:Nz), IZ(0:OUTNz), IT(0:OUTNt), CuNz(0:Nt), CuNzm1(0:Nt), &
+                tmp(0:Nz), SigmaNz(0:Nt), SigmaNzm1(0:Nt), kpar2(0:Nz), stat=err_alloc)
       if (err_alloc /= 0) then
          print *, "allocation error"
          pause
          stop
       end if
 
+      C0 = dcmplx(0, -1.0D0)
+      C2 = 1.0D0/cdsqrt(Im1*pi)
+      DeltaT = dt
       Nzm1 = Nz - 1
-      SQRDT = dsqrt(DeltaT)
-      SQRDZ = DeltaZ*DeltaZ
-      Field_sam(:) = InitialField(:)
+      SQRDT = dsqrt(dt)
+      SQRDZ = dz*dz
 #if __INTEL_COMPILER
-      IZ(:) = (/0:Nz:INTERVALZ/)
+      IZ(:) = (/0:Nz:INTZ/)
+      IT(:) = (/0:Nt:INTT/)
 #else
       do i = 0, OUTNz
-         IZ(i) = i*INTERVALZ
+         IZ(i) = i*INTZ
+         OUTZAxis(i) = ZAxis(i*INTZ)
+      end do
+      do i = 0, OUTNt
+         IT(i) = i*INTT
+         OUTTAxis(i) = TAxis(i*INTT)
       end do
 #endif
-      OldOldSigmaNz = dcmplx(0)
-      OldOldSigmaNzm1 = dcmplx(0)
+      do i = 0, OUTNz
+         OUTZAxis(i) = ZAxis(i*INTZ)
+      end do
+      do i = 0, OUTNt
+         OUTTAxis(i) = TAxis(i*INTT)
+      end do
 
-      WNz = -(2.0d0/3.0d0*C0*DeltaZ/DeltaT - 1.0d0/DeltaZ)
-      WNzm1 = -(C0/3.0d0*DeltaZ/DeltaT + 1.0d0/DeltaZ)
-      A(0) = 1
-      A(1:Nzm1) = -2.0d0*(1.0d0 - DeltaZ/DeltaT*C0*DeltaZ)
-      A(Nz) = 1.0d0 + 4.0d0/3.0d0*C2*WNz*SQRDT
+      WNz = -((2.0D0/3.0D0*C0*dz/dt + kpar2(Nz)*dz/3.0D0) - 1.0D0/dz)
+      WNzm1 = -((C0/3.0D0*dz/dt + kpar2(Nzm1)*dz/6.0D0) + 1.0D0/dz); 
+      A(0) = 1.0D0
+      A(1:Nzm1) = -2.0D0*(1.0D0 - dz*dz/dt*C0 - dz*kpar2(1:Nzm1)*dz/2.0D0)
+      A(Nz) = 1.0D0 + 4.0D0/3.0D0*C2*WNz*SQRDT
       B(0) = 0
-      B(1:Nzm1) = 1
-      C(1:Nzm1) = 1
-      C(Nz) = 4.0d0/3.0d0*C2*WNzm1*SQRDT
+      B(1:Nzm1) = 1.0D0
+      C(1:Nzm1) = 1.0D0
+      C(Nz) = 4.0D0/3.0D0*C2*WNzm1*SQRDT
 
-      FNz(:) = 0
-      FNzm1(:) = 0
-      FNz(0) = Field_sam(Nz)
-      FNzm1(0) = Field_sam(Nzm1)
-      WR(:) = 0
+      !SQRDTm4d3 = 4.0d0/3.0d0*SQRDT
+      !SQRDTm2d3 = 2.0d0/3.0d0*SQRDT
+      !C2mSQRDTm4d3 = C2*SQRDT*4.0d0/3.0d0
+      !C0mSQRDZdDTm2 = 2.0d0*C0*SQRDZ/dt !C0mSQRDZdDTm2 = 2.0d0*C0*dz/dt*dz
+      !C0m2d3dDT = C0*2.0d0/3.0d0/dt
+      !DZmC0d3dDT = dz/dt*C0/3.0d0
+      !DZmC0m2d3dDT = dz/dt*C0*2.0d0/3.0d0
+      !DeltaZd3 = dz/3.0d0
+      !DeltaZd6 = dz/6.0d0
 
-      SQRDTm4d3 = 4.0d0/3.0d0*SQRDT
-      SQRDTm2d3 = 2.0d0/3.0d0*SQRDT
-      C2mSQRDTm4d3 = C2*SQRDT*4.0d0/3.0d0
-      C0mSQRDZdDeltaTm2 = 2.0d0*C0*SQRDZ/DeltaT !C0mSQRDZdDeltaTm2 = 2.0d0*C0*DeltaZ/DeltaT*DeltaZ
-      C0m2d3dDeltaT = C0*2.0d0/3.0d0/DeltaT
-      DeltaZmC0d3dDeltaT = DeltaZ/DeltaT*C0/3.0d0
-      DeltaZmC0m2d3dDeltaT = DeltaZ/DeltaT*C0*2.0d0/3.0d0      
-      DeltaZd3 = DeltaZ/3.0d0
-      DeltaZd6 = DeltaZ/6.0d0
-
+      !Initial values
+      kpar2(:) = 0
+      field(:) = InitialField(:)
+      OUTF(:, 0) = InitialField(:)
+      SigmaNz(0) = 0
+      SigmaNzm1(0) = 0
+      call pendulumODE(theta, dthdz, field, Ne, Nz, dz)
       call calc_theta0(theta, dthdz, Ne, Delta)
+      call Current(cu, theta, Ne, Nz, Ic)
+      FNz(0) = field(Nz)
+      FNzm1(0) = field(Nzm1)
+      CuNz(0) = cu(Nz)
+      CuNzm1(0) = cu(Nzm1)
+      OUTCu(:, 0) = cu(IZ)
 
+      WR(0) = dz*(1.0D0/6.0D0*(2.0D0*CuNz(0) + CuNzm1(0))); 
       write (*, '(/)')
 
       time_loop: do step = 1, Nt
          !vezde nije step == j
-         !Old -> (step - 1); OldOld -> (step - 2)
 
-         call pendulumODE(theta, dthdz, Field_sam, Ne, Nz, DeltaZ)
-         call Current(OldCu, theta, Ne, Nz, Ic)
-
-         if ((step /= 1) .and. (mod(step - 1, INTERVALT) == 0)) then
-            OUTCu(:, jout) = OldCu(IZ)
-         end if
-
-         WR_step_part = DeltaZmC0m2d3dDeltaT*FNz(step - 1) &
-                        + DeltaZmC0d3dDeltaT*FNzm1(step - 1) &
-                        !- (DeltaZm2*OldSigmaNz + DeltaZ*OldSigmaNzm1)
-                        - (2.0d0*SigmaNz(step - 1) + SigmaNzm1(step - 1))
-         !WR_step_part = DeltaZ*((C0m2d3dDeltaT - kpar2(Nz)/3.0d0)*Field_sam(Nz) &
-         !                       + (C0d3dDeltaT - kpar2(Nzm1)/6.0d0)*Field_sam(Nzm1) &
-         !                       - (2.0d0*OldSigmaNz + OldSigmaNzm1))
-         WR(step) = WR_step_part + 2.0d0*DeltaZd3*OldCu(Nz) + 2.0d0*DeltaZd6*OldCu(Nzm1)
-
+         WR(step) = dz*((C0*2.0D0/3.0D0/dt - kpar2(Nz)/3.0D0)*FNz(step - 1) &
+                        + (C0/3.0D0/dt - kpar2(Nzm1)/6.0D0)*FNzm1(step - 1) &
+                        + 1.0D0/6.0D0*(4.0D0*CuNz(step - 1) + 2.0D0*CuNzm1(step - 1)) &
+                        - (2.0D0*SigmaNz(step - 1) + SigmaNzm1(step - 1)))
          if (step == 1) then
-            IR = 0.0d0
+            IR = 0
          elseif (step == 2) then
-            IR = SQRDTm4d3*(u(0)*(1.0d0 - SQR2D2) + u(1)*(SQR2M2 - 2.5d0))
+            IR = 4.0D0/3.0D0*SQRDT*(u(0)*(1 - SQR2D2) + u(1)*(SQR2M2 - 2.5D0))
          else
-            IR = u(0)*((step - 1.0d0)**(1.5) - (step - 1.5d0)*dsqrt(dble(step))) + u(step - 1)*(SQR2M2 - 2.5d0)
+            IR = 4.0D0/3.0D0*SQRDT*(u(0)*((step - 1.0D0)**(1.5) - (step - 1.5D0)*dsqrt(dble(step))) + u(step - 1)*(SQR2M2 - 2.5D0))
             do j = 1, step - 2
-               IR = SQRDTm4d3*(IR + u(j)*((step - j - 1)**(1.5) - 2*(step - j)**(1.5) + (step - j + 1)**(1.5)))
+               IR = IR + 4.0D0/3.0D0*SQRDT*(u(j)*((step - j - 1.0D0)**(1.5) - 2.0D0*(step - j)**(1.5) + (step - j + 1.0D0)**(1.5)))
             end do
          end if
 
-         D(0) = 0
-         D_1_Nzm1_part = (2.0d0 + C0mSQRDZdDeltaTm2)*Field_sam(1:Nzm1) - (Field_sam(0:Nz - 2) + Field_sam(2:Nz))
-         D(1:Nzm1) = D_1_Nzm1_part + SQRDZ*2.0d0*OldCu(1:Nzm1)
-         D_end_part = -C2*(IR + SQRDTm2d3*u(step - 1))
-         D(Nz) = D_end_part - C2mSQRDTm4d3*WR(step)
+         D(1) = 0
+         D(1:Nzm1) = SQRDZ*(2.0D0*cu(1:Nzm1)) &
+                     + 2.0D0*(1.0D0 + C0*SQRDZ/dt - SQRDZ*kpar2(1:Nzm1)/2.0D0)*field(1:Nzm1) &
+                     - (field(0:Nz - 2) + field(2:Nz))
+         D(Nz) = -C2*(IR + 4.0D0/3.0D0*WR(step)*SQRDT + 2.0D0/3.0D0*SQRDT*(WNzm1*field(Nzm1) &
+                                                                           + WNz*field(Nz) + WR(step - 1))*cdexp(CR*dt))
 
-         call ltridag(C, A, B, D, lField_nesam)
-         call rtridag(C, A, B, D, rField_nesam)
-         Field_nesam(:) = (lField_nesam + rField_nesam)/2.0d0 ! nesamosoglas. pole
+         call ltridag(C, A, B, D, lfield_p)
+         call rtridag(C, A, B, D, rfield_p)
+         field_p(:) = (lfield_p + rfield_p)/2.0D0 ! nesamosoglas. pole
 
+         maxfield = maxval(cdabs(field))
          inloopnum = 0
-         do      
-            !inloopnum = inloopnum + 1            
-            
-            call pendulumODE(theta, dthdz, Field_nesam, Ne, Nz, DeltaZ)
-            call Current(Cup, theta, Ne, Nz, Ic)
+         do
+            !inloopnum = inloopnum + 1
 
-            WR(step) = WR_step_part + DeltaZd3*(Cup(Nz) + OldCu(Nz)) + DeltaZd6*(Cup(Nzm1) + OldCu(Nzm1)); 
-            D(1:Nzm1) = D_1_Nzm1_part + SQRDZ*(Cup(1:Nzm1) + OldCu(1:Nzm1))
-            D(Nz) = D_end_part - C2mSQRDTm4d3*WR(step)
+            call pendulumODE(theta, dthdz, field_p, Ne, Nz, dz)
+            call Current(cu_p, theta, Ne, Nz, Ic)
 
-            call ltridag(C, A, B, D, lField_sam)
-            call rtridag(C, A, B, D, rField_sam)
-            Field_sam(:) = (lField_sam + rField_sam)/2.0d0 ! samosoglas. pole
-            
-            maxdiff = maxval(cdabs(Field_sam - Field_nesam))/maxval(cdabs(Field_sam))
+            WR(step) = dz*((C0*2.0D0/3.0D0/dt - kpar2(Nz)/3.0D0)*field(Nz) &
+                           + (C0/3.0D0/dt - kpar2(Nzm1)/6.0D0)*field(Nzm1) &
+                           + 1.0D0/6.0D0*(2.0D0*cu_p(Nz) + 2.0D0*cu(Nz) + cu_p(Nzm1) + cu(Nzm1)) &
+                           - (2.0D0*SigmaNz(step - 1) + SigmaNzm1(step - 1)))
+
+            D(1:Nzm1) = SQRDZ*(cu_p(1:Nzm1) + cu(1:Nzm1)) &
+                        + 2.0D0*(1 + C0*SQRDZ/dt - SQRDZ*kpar2(1:Nzm1)/2.0D0) *field(1:Nzm1) &
+                        - (field(0:Nz - 2) + field(2:Nz))
+            D(Nz) = -C2*(IR + 4.0D0/3.0D0*WR(step)*SQRDT + 2.0D0/3.0D0*SQRDT*(WNzm1*field(Nzm1) &
+                                                                              + WNz*field(Nz) + WR(step - 1))*cdexp(CR*dt))
+
+            call ltridag(C, A, B, D, lfield_p)
+            call rtridag(C, A, B, D, rfield_p)
+            field_p(:) = (lfield_p + rfield_p)/2.0D0 ! samosoglas. pole
+
+            maxfield_p = maxval(cdabs(field_p))
+            maxdiff = dabs(maxfield - maxfield_p)/maxfield
             !print *, 'innerloop # ', inloopnum, 'maxdiff =', maxdiff
-
-            if (maxdiff .le. tol) exit  
-            
-            Field_nesam = Field_sam
+            if (maxdiff .le. tol) exit
+            maxfield = maxfield_p
          end do
 
-         FNz(step) = Field_sam(Nz)
-         FNzm1(step) = Field_sam(Nz - 1)
+         field(:) = field_p(:)
+         call pendulumODE(theta, dthdz, field, Ne, Nz, dz)
+         call Current(cu, theta, Ne, Nz, Ic)
 
-         SigmaNz(step) = -DeltaZmC0d3dDeltaT*FNz(step) &
-                         + DeltaZmC0d3dDeltaT*FNz(step - 1) &
-                         + DeltaZd6*(Cup(Nz) + OldCu(Nz)) - DeltaZ*SigmaNz(step - 1)
-         SigmaNzm1(step) = -DeltaZmC0d3dDeltaT*FNzm1(step) &
-                           + DeltaZmC0d3dDeltaT*FNzm1(step - 1) &
-                           + DeltaZd6*(Cup(Nzm1) + OldCu(Nzm1)) - DeltaZ*SigmaNzm1(step - 1)
+         FNz(step) =  field(Nz)
+         FNzm1(step) = field(Nzm1)
+         CuNz(step) = cu(Nz)
+         CuNzm1(step) = cu(Nzm1)
+    
+         SigmaNz(step) = -(kpar2(Nz)/6.0D0 + C0/3.0D0/dt) * FNz(step) &
+            + (C0/3.0D0/dt - kpar2(Nz)/6.0D0) * FNz(step-1) &
+            + 1.0D0/6.0D0*(CuNz(step) + CuNz(step-1)) - SigmaNz(step-1)
+         SigmaNzm1(step) = -(kpar2(Nzm1)/6.0D0 + C0/3.0D0/dt) * FNzm1(step) &
+            + (C0/3.0D0/dt - kpar2(Nzm1)/6.0D0) * FNzm1(step-1) &
+            + 1.0D0/6.0D0*(CuNzm1(step) + CuNzm1(step-1)) - SigmaNzm1(step-1)
 
-         if (mod(step, INTERVALT) .eq. 0) then
-            OUTB(:, jout) = Field_sam(IZ)
+         if (mod(step, INTT) .eq. 0) then
+            OUTF(:, jout) = field(IZ)
+            OUTCu(:, jout) = cu(IZ)
             jout = jout + 1
          end if
 
 #if __INTEL_COMPILER
-         write (*, '(a,i10,a,f10.5,a,1pe17.8,a,1pe17.8,a,1pe17.8,\,a)') 'Step = ', step, '   Time = ', DeltaT*step, &
-            '   MAX|B| = ', maxval(cdabs(Field_sam)), '   MAX|J| = ', maxval(cdabs(Cup)), '   MAX DIFF = ', maxdiff, char(13)
+         write (*, '(a,i10,a,f10.5,a,1pe17.8,a,1pe17.8,a,1pe17.8,\,a)') 'Step = ', step, '   Time = ', dt*step, &
+            '   MAX|B| = ', maxval(cdabs(field)), '   MAX|J| = ', maxval(cdabs(cu_p)), '   MAX DIFF = ', maxdiff, char(13)
 #else
-         write (*, '(a,i10,a,f10.5,a,1pe17.8,a,1pe17.8,a,1pe17.8,a)', advance="no") 'Step = ', step, '   Time = ', DeltaT*step, &
-            '   MAX|B| = ', maxval(cdabs(Field_sam)), '   MAX|J| = ', maxval(cdabs(Cup)), '   MAX DIFF = ', maxdiff, char(13)
+         write (*, '(a,i10,a,f10.5,a,1pe17.8,a,1pe17.8,a,1pe17.8,a)', advance="no") 'Step = ', step, '   Time = ', dt*step, &
+            '   MAX|B| = ', maxval(cdabs(field)), '   MAX|J| = ', maxval(cdabs(cu_p)), '   MAX DIFF = ', maxdiff, char(13)
 #endif
 
       end do time_loop
+
+      OUTF(:, OUTNt) = field(IZ) ! sohranyaem posledniy result
 
       write (*, '(/)')
 
@@ -189,33 +214,19 @@ contains
 103   print *, 'error of file write'; pause; stop
    end subroutine
 
-   subroutine Current(Cu, theta, Ne, Nz, Ic)
+   subroutine Current(cu, theta, Ne, Nz, Ic)
 
       implicit none
 
       real(c_double), intent(in) :: theta(0:, :), Ic
-      complex(c_double_complex), intent(inout) :: Cu(0:)
+      complex(c_double_complex), intent(inout) :: cu(0:)
       integer(c_int) Ne, Nz, i
 
       do i = 0, Nz
-         Cu(i) = Ic*2.0d0/Ne*sum(cdexp(-Im1*theta(i, :)))
+         cu(i) = Ic*2.0d0/Ne*sum(cdexp(-Im1*theta(i, :)))
       end do
 
    end subroutine Current
-
-   !function Current(theta, Nz, Ic) result(Cu)
-   !
-   !   implicit none
-   !
-   !   real(c_double) theta(0:, :), Ic
-   !   complex(c_double_complex) Cu(0:size(theta, 1) - 1)
-   !   integer(c_int) Nz,i
-   !
-   !   do i=0,Nz
-   !      Cu(i) = Ic*2.0d0/Ne*sum(cdexp(-Im1*theta(i,:)))
-   !   enddo
-   !
-   !end function Current
 
    subroutine rtridag(c, a, b, d, u)
       use util
@@ -279,10 +290,10 @@ contains
 
       do i = 0, Nz - 1
          rhs0 = rhs(F(i), theta(i, :)); 
-         theta(i + 1, :) = theta(i, :) + dthdz(i, :)*h + h/2.0*rhs0*h; 
+         theta(i + 1, :) = theta(i, :) + dthdz(i, :)*h + h/2.0D0*rhs0*h; 
          rhs1 = rhs(F(i + 1), theta(i + 1, :)); 
-         theta(i + 1, :) = theta(i, :) + dthdz(i, :)*h + h/6.0*rhs0*h + h/3.0*rhs1*h; 
-         dthdz(i + 1, :) = dthdz(i, :) + h/2.0*(rhs0 + rhs1); 
+         theta(i + 1, :) = theta(i, :) + dthdz(i, :)*h + h/6.0D0*rhs0*h + h/3.0D0*rhs1*h; 
+         dthdz(i + 1, :) = dthdz(i, :) + h/2.0D0*(rhs0 + rhs1); 
       end do
    end subroutine pendulumODE
 
