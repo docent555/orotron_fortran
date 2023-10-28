@@ -19,7 +19,7 @@ module functions
    private :: Current, rhs, pendulumODE, u, calc_theta0, ltridag, rtridag
 
 contains
-   subroutine gyr(Nz, Nt, Ne, Delta, Ic, dz, dt, ZAxis, TAxis, &
+   subroutine oro(Nz, Nt, Ne, Delta, Ic, dz, dt, ZAxis, TAxis, &
                   InitialField, tol, INTT, INTZ, OUTNz, OUTNt, OUTF, OUTCu, OUTZAxis, OUTTAxis) bind(c, name='gyr')
       implicit none
 

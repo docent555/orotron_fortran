@@ -114,7 +114,7 @@ program orotron
    !call oro(INP, OUTP)
    !call oro(Nz, Nt, Ne, INTT, INTZ, OUTNz, Delta, Ic, dz, dt, &
    !         ZAxis, TAxis, InitialField, tol, OUTB, OUTCu)
-   call gyr(Nz, Nt, Ne, Delta, Ic, dz, dt, ZAxis, TAxis, &
+   call oro(Nz, Nt, Ne, Delta, Ic, dz, dt, ZAxis, TAxis, &
             InitialField, tol, INTT, INTZ, OUTNz, OUTNt, OUTF, OUTCu, OUTZAxis, OUTTAxis)
 
    !open(1, file = 'test.dat', err = 101)
